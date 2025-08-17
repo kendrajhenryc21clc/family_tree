@@ -1,0 +1,189 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Interactive Family Tree — Live Demo</title>
+<style>
+  :root { --pad: 14px; }
+  html, body { margin:0; height:100%; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans"; display:grid; grid-template-rows:auto 1fr; }
+  header { display:flex; align-items:center; gap:.5rem; padding: var(--pad); border-bottom:1px solid #e5e5e5; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  header .sp { margin-left:auto; display:flex; gap:.5rem; align-items:center; }
+  header label { font-size:13px; color:#555; display:flex; gap:.35rem; align-items:center; }
+  #tree { position:relative; }
+  #tree svg { width:100%; height:100%; display:block; background:#fff; }
+  .link { fill: none; stroke: #cfd4d9; stroke-width: 1.5px; }
+  .node circle { stroke: #8b949e; stroke-width: 1px; fill: #fff; }
+  .node text { font-size: 12px; dominant-baseline: middle; pointer-events:none; }
+  .chip { pointer-events:none; }
+  .card { position:absolute; right: var(--pad); top: calc(var(--pad) + 40px); width: 280px; max-width: 40vw; padding:12px; border:1px solid #e5e5e5; border-radius:10px; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); }
+  .card img { width:100%; height:auto; border-radius:8px; margin-bottom:8px; }
+  .muted { color:#666; font-size:12px; }
+  .legend { font-size:12px; color:#666; }
+  .btn { padding:6px 10px; border:1px solid #d0d7de; border-radius:8px; background:#fff; font-size:13px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Interactive Family Tree — Live Demo</h1>
+  <div class="sp">
+    <label>Mode:
+      <select id="mode">
+        <option value="thumbs">Thumbnails in nodes</option>
+        <option value="names">Names on nodes + photo card</option>
+      </select>
+    </label>
+    <button class="btn" id="fit">Fit to screen</button>
+  </div>
+</header>
+<div id="tree"></div>
+<div id="card" class="card" hidden>
+  <img id="cardPhoto" alt="">
+  <div id="cardTitle" style="font-weight:600;"></div>
+  <div id="cardYears" class="muted"></div>
+  <div id="cardNotes" style="margin-top:6px;"></div>
+  <div class="legend" style="margin-top:8px;">Tip: click any node to select; double-click to collapse/expand.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+// --- Demo data (edit these objects to try your own) ---
+const PEOPLE = [
+  {ID:"P1", Name:"Great-Grandparent A", ParentID:"", Gender:"F", BirthYear:"1900", DeathYear:"", Notes:"Family matriarch", PhotoURL:"https://via.placeholder.com/160/87CEEB/000000?text=A", SpouseIDs:"P2", Order:1},
+  {ID:"P2", Name:"Great-Grandparent B", ParentID:"", Gender:"M", BirthYear:"1898", DeathYear:"1972", Notes:"", PhotoURL:"https://via.placeholder.com/160/FFD700/000000?text=B", SpouseIDs:"P1", Order:2},
+  {ID:"P3", Name:"Grandparent A", ParentID:"P1", Gender:"F", BirthYear:"1925", DeathYear:"", Notes:"", PhotoURL:"https://via.placeholder.com/160/ADFF2F/000000?text=C", SpouseIDs:"P4", Order:1},
+  {ID:"P4", Name:"Grandparent B", ParentID:"P2", Gender:"M", BirthYear:"1923", DeathYear:"2001", Notes:"", PhotoURL:"https://via.placeholder.com/160/FF69B4/000000?text=D", SpouseIDs:"P3", Order:1},
+  {ID:"P5", Name:"Parent A", ParentID:"P3", Gender:"F", BirthYear:"1950", DeathYear:"", Notes:"", PhotoURL:"https://via.placeholder.com/160/40E0D0/000000?text=E", SpouseIDs:"P6", Order:1},
+  {ID:"P6", Name:"Parent B", ParentID:"P4", Gender:"M", BirthYear:"1949", DeathYear:"", Notes:"", PhotoURL:"https://via.placeholder.com/160/FFA07A/000000?text=F", SpouseIDs:"P5", Order:1},
+  {ID:"P7", Name:"You", ParentID:"P5", Gender:"F", BirthYear:"1985", DeathYear:"", Notes:"", PhotoURL:"https://via.placeholder.com/160/BA55D3/000000?text=Y", SpouseIDs:"", Order:1},
+  {ID:"P8", Name:"Sibling", ParentID:"P5", Gender:"M", BirthYear:"1988", DeathYear:"", Notes:"", PhotoURL:"https://via.placeholder.com/160/6495ED/000000?text=S", SpouseIDs:"", Order:2},
+];
+
+function buildTree(rows){
+  const map = new Map(rows.map(p => [p.ID, {...p, children:[]} ]));
+  const roots = [];
+  rows.forEach(p => {
+    if (p.ParentID && map.has(p.ParentID)) map.get(p.ParentID).children.push(map.get(p.ID));
+    else roots.push(map.get(p.ID));
+  });
+  const sortKids = n => { n.children.sort((a,b)=>(a.Order||0)-(b.Order||0) || a.Name.localeCompare(b.Name)); n.children.forEach(sortKids); };
+  roots.forEach(sortKids);
+  return {Name:"Ancestors", children: roots};
+}
+
+const data = buildTree(PEOPLE);
+
+const container = document.getElementById('tree');
+const card = document.getElementById('card');
+const cardPhoto = document.getElementById('cardPhoto');
+const cardTitle = document.getElementById('cardTitle');
+const cardYears = document.getElementById('cardYears');
+const cardNotes = document.getElementById('cardNotes');
+const modeSel = document.getElementById('mode');
+const fitBtn = document.getElementById('fit');
+
+let svg, g, root, tree, zoom;
+
+function init(){
+  container.innerHTML = '';
+  const w = container.clientWidth || window.innerWidth;
+  const h = container.clientHeight || (window.innerHeight - 64);
+  svg = d3.select('#tree').append('svg').attr('width','100%').attr('height', h);
+  g = svg.append('g');
+  zoom = d3.zoom().on('zoom', (ev)=> g.attr('transform', ev.transform));
+  svg.call(zoom);
+  tree = d3.tree().nodeSize([60, 180]);
+  root = d3.hierarchy(data, d => d.children);
+  root.x0 = h/2; root.y0 = 0;
+  update(root);
+  fitToScreen();
+}
+
+function update(source){
+  tree(root);
+  // links
+  const link = g.selectAll('path.link').data(root.links(), d => d.target.data.ID || d.target.data.Name);
+  link.join(
+    enter => enter.append('path').attr('class','link')
+      .attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x)),
+    update => update.attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x)),
+    exit => exit.remove()
+  );
+
+  // nodes
+  const node = g.selectAll('g.node').data(root.descendants(), d => d.data.ID || d.data.Name);
+  const nodeEnter = node.enter().append('g')
+    .attr('class','node')
+    .attr('transform', d => `translate(${d.y},${d.x})`)
+    .on('dblclick', (_,d) => { toggle(d); update(d); })
+    .on('click', (_,d) => showCard(d.data));
+
+  nodeEnter.append('circle').attr('r', 22).attr('fill', '#fff');
+
+  if (modeSel.value === 'thumbs') {
+    // Circle image via clipPath
+    nodeEnter.append('defs').append('clipPath')
+      .attr('id', d => 'clip-' + (d.data.ID || d.data.Name).replace(/[^A-Za-z0-9]/g,''))
+      .append('circle').attr('r', 20).attr('cx', 0).attr('cy', 0);
+
+    nodeEnter.append('image')
+      .attr('href', d => d.data.PhotoURL || '')
+      .attr('x', -20).attr('y', -20).attr('width', 40).attr('height', 40)
+      .attr('clip-path', d => 'url(#clip-' + (d.data.ID || d.data.Name).replace(/[^A-Za-z0-9]/g,'') + ')');
+
+  } else {
+    nodeEnter.append('text').attr('x', 30).attr('dy', '0.35em').text(d => d.data.Name || '');
+  }
+
+  node.merge(nodeEnter)
+    .transition().duration(250)
+    .attr('transform', d => `translate(${d.y},${d.x})`);
+
+  node.exit().remove();
+}
+
+function toggle(d){
+  if (d.children) { d._children = d.children; d.children = null; }
+  else { d.children = d._children; d._children = null; }
+}
+
+function showCard(p){
+  if (modeSel.value === 'names') {
+    card.hidden = false;
+    cardPhoto.src = p.PhotoURL || '';
+    cardTitle.textContent = p.Name || '';
+    const yrs = [p.BirthYear, p.DeathYear].filter(Boolean).join(' – ');
+    cardYears.textContent = yrs;
+    cardNotes.textContent = p.Notes || '';
+  } else {
+    // In thumbnail mode, hide the side card (optional)
+    card.hidden = true;
+  }
+}
+
+function fitToScreen(){
+  const nodes = root.descendants();
+  if (!nodes.length) return;
+  const minX = d3.min(nodes, d => d.x), maxX = d3.max(nodes, d => d.x);
+  const minY = d3.min(nodes, d => d.y), maxY = d3.max(nodes, d => d.y);
+  const w = container.clientWidth || window.innerWidth;
+  const h = container.clientHeight || (window.innerHeight - 64);
+  const dx = maxX - minX + 80;
+  const dy = maxY - minY + 160;
+  const scale = Math.min(1.2, Math.min(w / dy, h / dx));
+  const translateX = (w - dy * scale) / 2 - minY * scale + 40;
+  const translateY = (h - dx * scale) / 2 - minX * scale + 20;
+  svg.call(zoom.transform, d3.zoomIdentity.translate(translateX, translateY).scale(scale));
+}
+
+modeSel.addEventListener('change', ()=> { init(); });
+fitBtn.addEventListener('click', ()=> fitToScreen());
+window.addEventListener('resize', ()=> fitToScreen(), {passive:true});
+
+init();
+</script>
+</body>
+</html>
